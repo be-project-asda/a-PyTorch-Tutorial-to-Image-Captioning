@@ -92,9 +92,16 @@ def caption_image_beam_search(encoder, decoder, image_path, word_map, beam_size=
 
         scores = decoder.fc(h)  # (s, vocab_size)
         scores = F.log_softmax(scores, dim=1)
+        penalties = torch.zeros(seqs.size()[0], vocab_size)
+        for b1 in range(seqs.size()[0]): # Iterate over each beam: B1 is the current beam we are evaluating
+            for b2 in range(b1): # To compare B1 with every previous beam B2
+                for token in seqs[b2]:
+                    penalties[b1] += torch.eq(seqs[b1], token).type(torch.float32)
+                
+                
 
         # Add
-        scores = top_k_scores.expand_as(scores) + scores  # (s, vocab_size)
+        scores = top_k_scores.expand_as(scores) + scores + _lambda * penalties  # (s, vocab_size)
 
         # For the first step, all k points will have the same scores (since same k previous words, h, c)
         if step == 1:
@@ -193,6 +200,7 @@ if __name__ == '__main__':
     parser.add_argument('--word_map', '-wm', help='path to word map JSON')
     parser.add_argument('--beam_size', '-b', default=5, type=int, help='beam size for beam search')
     parser.add_argument('--dont_smooth', dest='smooth', action='store_false', help='do not smooth alpha overlay')
+    parser.add_argument('--lambda', default=0.5, dest="_lambda", help="Diversity parameter for diverse beam search")
 
     args = parser.parse_args()
 
