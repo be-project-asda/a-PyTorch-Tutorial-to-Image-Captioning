@@ -98,13 +98,15 @@ def caption_image_beam_search(encoder, decoder, image_path, word_map, beam_size=
 
         penalties = torch.zeros(seqs.size()[0], vocab_size).cuda()
         for b1 in range(seqs.size()[0]): # Iterate over each beam: B1 is the current beam we are evaluating
-            for b2 in range(b1): # To compare B1 with every previous beam B2
+            for b2 in range(b1+1): # To compare B1 with every previous beam B2
                 for token in seqs[b2]: # Check every token in b2
-                    if token in seqs[b1]: # if token exists in b1 AND b2
-                        penalties[b1][token] += 1 # penalize that token
+                    # if token in seqs[b1]: # if token exists in b1 AND b2
+                    penalties[b1][token] += 1 # penalize that token
+                    # penalties[b2][token] += 1
 
         # Add diversity penalty
-        scores = top_k_scores.expand_as(scores) + scores - _lambda * penalties  # (s, vocab_size)
+        # scores = scores - args._lambda * penalties
+        scores = ( top_k_scores.expand_as(scores) + scores + args._lambda * penalties ) / (0.7*seqs.size()[1])  # (s, vocab_size)
         # For the first step, all k points will have the same scores (since same k previous words, h, c)
         if step == 1:
             top_k_scores, top_k_words = scores[0].topk(k, 0, True, True)  # (s)
@@ -150,13 +152,13 @@ def caption_image_beam_search(encoder, decoder, image_path, word_map, beam_size=
         step += 1
 
     i = complete_seqs_scores.index(max(complete_seqs_scores))
-    seq = complete_seqs[i]
+    seq = complete_seqs
     alphas = complete_seqs_alpha[i]
 
     return seq, alphas
 
 
-def visualize_att(image_path, seq, alphas, rev_word_map, smooth=True):
+def visualize_att(image_path, seqs, alphas, rev_word_map, smooth=True):
     """
     Visualizes caption with weights at every word.
 
@@ -171,27 +173,28 @@ def visualize_att(image_path, seq, alphas, rev_word_map, smooth=True):
     image = Image.open(image_path)
     image = image.resize([14 * 24, 14 * 24], Image.LANCZOS)
 
-    words = [rev_word_map[ind] for ind in seq]
+    for seq in seqs:
+        words = [rev_word_map[ind] for ind in seq]
 
-    for t in range(len(words)):
-        if t > 50:
-            break
-        plt.subplot(np.ceil(len(words) / 5.), 5, t + 1)
+        for t in range(len(words)):
+            if t > 50:
+                break
+            plt.subplot(np.ceil(len(words) / 5.), 5, t + 1)
 
-        plt.text(0, 1, '%s' % (words[t]), color='black', backgroundcolor='white', fontsize=12)
-        plt.imshow(image)
-        current_alpha = alphas[t, :]
-        if smooth:
-            alpha = skimage.transform.pyramid_expand(current_alpha.numpy(), upscale=24, sigma=8)
-        else:
-            alpha = skimage.transform.resize(current_alpha.numpy(), [14 * 24, 14 * 24])
-        if t == 0:
-            plt.imshow(alpha, alpha=0)
-        else:
-            plt.imshow(alpha, alpha=0.8)
-        plt.set_cmap(cm.Greys_r)
-        plt.axis('off')
-    plt.show()
+            plt.text(0, 1, '%s' % (words[t]), color='black', backgroundcolor='white', fontsize=12)
+            plt.imshow(image)
+            current_alpha = alphas[t, :]
+            if smooth:
+                alpha = skimage.transform.pyramid_expand(current_alpha.numpy(), upscale=24, sigma=8)
+            else:
+                alpha = skimage.transform.resize(current_alpha.numpy(), [14 * 24, 14 * 24])
+            if t == 0:
+                plt.imshow(alpha, alpha=0)
+            else:
+                plt.imshow(alpha, alpha=0.8)
+            plt.set_cmap(cm.Greys_r)
+            plt.axis('off')
+        plt.show()
 
 
 if __name__ == '__main__':
@@ -202,7 +205,7 @@ if __name__ == '__main__':
     parser.add_argument('--word_map', '-wm', help='path to word map JSON')
     parser.add_argument('--beam_size', '-b', default=5, type=int, help='beam size for beam search')
     parser.add_argument('--dont_smooth', dest='smooth', action='store_false', help='do not smooth alpha overlay')
-    parser.add_argument('--lambda', default=0.5, dest="_lambda", help="Diversity parameter for diverse beam search")
+    parser.add_argument('--lambda', default=0.5, type=float, dest="_lambda", help="Diversity parameter for diverse beam search")
 
     args = parser.parse_args()
 
@@ -221,8 +224,12 @@ if __name__ == '__main__':
     rev_word_map = {v: k for k, v in word_map.items()}  # ix2word
 
     # Encode, decode with attention and beam search
-    seq, alphas = caption_image_beam_search(encoder, decoder, args.img, word_map, args.beam_size)
+    seqs, alphas = caption_image_beam_search(encoder, decoder, args.img, word_map, args.beam_size)
     alphas = torch.FloatTensor(alphas)
 
-    # Visualize caption and attention of best sequence
-    visualize_att(args.img, seq, alphas, rev_word_map, args.smooth)
+    for seq in seqs:
+        words = [rev_word_map[ind] for ind in seq]
+        print(words)
+
+    # # Visualize caption and attention of best sequence
+    # visualize_att(args.img, seqs, alphas, rev_word_map, args.smooth)
