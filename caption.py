@@ -92,10 +92,12 @@ def caption_image_beam_search(encoder, decoder, image_path, word_map, beam_size=
 
         scores = decoder.fc(h)  # (s, vocab_size)
         scores = F.log_softmax(scores, dim=1)
+        print("Scores: {0}".format(scores.size()))
+        print("sequences: {0}".format(seqs[0].size()))
 
         # Add
         scores = top_k_scores.expand_as(scores) + scores  # (s, vocab_size)
-
+        print(scores.size())
         # For the first step, all k points will have the same scores (since same k previous words, h, c)
         if step == 1:
             top_k_scores, top_k_words = scores[0].topk(k, 0, True, True)  # (s)
