@@ -288,22 +288,23 @@ def caption_image_beam_search(
 
     # Read image and process
     img = imread(image_path)
+
     if len(img.shape) == 2:
         img = img[:, :, np.newaxis]
         img = np.concatenate([img, img, img], axis=2)
-        img = imresize(img, (256, 256))
-        img = img.transpose(2, 0, 1)
-        img = img / 255.
-        img = torch.FloatTensor(img).to(device)
-        normalize = transforms.Normalize(
-            mean=[0.485, 0.456, 0.406],
-            std=[0.229, 0.224, 0.225]
-        )
-        transform = transforms.Compose([normalize])
-        image = transform(img)  # (3, 256, 256)
+    img = imresize(img, (256, 256))
+    img = img.transpose(2, 0, 1)
+    img = img / 255.
+    img = torch.FloatTensor(img).to(device)
+    normalize = transforms.Normalize(
+        mean=[0.485, 0.456, 0.406],
+        std=[0.229, 0.224, 0.225]
+    )
+    transform = transforms.Compose([normalize])
+    image = transform(img)  # (3, 256, 256)
 
     # Encode
-    image = image.unsqueeze(0)  # (1, 3, 256, 256)
+    image = img.unsqueeze(0)  # (1, 3, 256, 256)
     encoder_out = encoder(image)
                 # (1, enc_image_size, enc_image_size, encoder_dim)
     enc_image_size = encoder_out.size(1)
@@ -325,7 +326,7 @@ def caption_image_beam_search(
     # Tensor to store top k previous words at each step;
     #now they're just <start>
     k_prev_words = torch.LongTensor(
-        [[word_map['<start>']]] * k
+        [[word_map["<start>"]]] * k
     ).to(device)  # (k, 1)
 
     # Tensor to store top k sequences; now they're just <start>
@@ -369,7 +370,7 @@ def caption_image_beam_search(
 
     done_beams = diverse_beam_search(
         rnn_state=[h, c],
-        init_logprobs,
+        init_logprobs=init_logprobs,
         num_beams=k,
         num_groups=g,
         penalty_lambda=penalty,
@@ -385,7 +386,7 @@ def caption_image_beam_search(
 
 
 def visualize_att(image_path, seqs, alphas, rev_word_map, smooth=True):
-                                            """
+    """
     Visualizes caption with weights at every word.
 
     Adapted from paper authors' repo: https://github.com/kelvinxu/arctic-captions/blob/master/alpha_visualization.ipynb
@@ -400,7 +401,7 @@ def visualize_att(image_path, seqs, alphas, rev_word_map, smooth=True):
     image = image.resize([14 * 24, 14 * 24], Image.LANCZOS)
 
     for seq in seqs:
-    words = [rev_word_map[ind] for ind in seq]
+        words = [rev_word_map[ind] for ind in seq]
 
     for t in range(len(words)):
         if t > 50:
@@ -441,7 +442,7 @@ if __name__ == '__main__':
 
     parser.add_argument(
         '--group_size',
-        '-b',
+        '-g',
         dest="group_size",
         default=8,
         type=int,
@@ -454,7 +455,7 @@ if __name__ == '__main__':
         help='do not smooth alpha overlay'
     )
     parser.add_argument(
-        ':lambda',
+        '--lambda',
         default=0.5,
         type=float,
         dest="_lambda",
@@ -473,21 +474,21 @@ if __name__ == '__main__':
 
     # Load word map (word2ix)
     with open(args.word_map, 'r') as j:
-    word_map = json.load(j)
-    rev_word_map = {v: k for k, v in word_map.items()}  # ix2word
+        word_map = json.load(j)
+        rev_word_map = {v: k for k, v in word_map.items()}  # ix2word
 
     # Encode, decode with attention and beam search
     seqs = caption_image_beam_search(
         encoder,
         decoder,
-        image_path,
-        word_map,
-        beam_size=args['beam_size'],
-        group_size=args['group_size']
+        args.img,
+        args.word_map,
+        beam_size=args.beam_size,
+        group_size=args.group_size
     )
     for seq in seqs:
-    words = [rev_word_map[ind] for ind in seq]
-    print(words)
+        words = [rev_word_map[ind] for ind in seq]
+        print(words)
 
     # # Visualize caption and attention of best sequence
     # visualize_att(args.img, seqs, alphas, rev_word_map, args.smooth)
