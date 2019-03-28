@@ -56,11 +56,13 @@ def __beam_step(
     beam_logprobs_sum: joint log probability of each beam
     time             : time step
     """
-    ys, indices = torch.sort(aug_logprobs, 2, True)
+    print("aug log probs size: ", aug_logprobs.shape)
+    ys, indices = torch.sort(aug_logprobs, 1, True)
     candidates = []
-    columns = min(beam_size, len(ys)[1])
+    columns = min(beam_size, len(ys[0]))
     rows = beam_size
-    if t == 1:
+    print(beam_size)
+    if time == 1:
         rows = 1
 
     for column in range(columns):
@@ -70,20 +72,27 @@ def __beam_step(
             local_unaugmented_logprob = logprobs[row,indices[row][column]]
             candidates.append(
                 {
-                    "column":ix[row][column],
+                    "column":indices[row][column],
                     "row":row,
                     "prob":candidate_logprob,
-                    "local_logprob":local_unaug_logprob
+                    "local_logprob":local_unaugmented_logprob
                 }
             )
     candidates.sort(key=lambda x: x['prob'])
-    new_state = [x.clone().to(device) for x in state]
+    print(rnn_state)
+    new_state = [x.clone().to(device) for x in rnn_state]
+    print("new state: ", len(new_state))
+    print("rnn_state: ", len(rnn_state), type(rnn_state[0]), rnn_state[0].shape)
+    print("candidates: ", len(candidates))
 
     if time > 1:
         beam_seq_prev = beam_seq[0:time,:].clone()
         beam_seq_logprobs_prev = beam_seq_logprobs[0:t, :].clone()
 
-    for v_index, candidate in enumerate(candidates):
+    for candidate in candidates:
+        print(candidate['row'])
+    for v_index in range(beam_size):
+        candidate = candidates[v_index]
         candidate['kept'] = True
         if time > 1:
             beam_seq[0:time, v_index] = (
@@ -93,12 +102,13 @@ def __beam_step(
                 beam_seq_logprobs_prev[:,candidate['row']]
             )
         for state_index in range(len(new_state)):
+            print("\n\n\n",v_index)
             new_state[state_index][v_index] = (
-                state[state_index][candidate['row']]
+                rnn_state[state_index][candidate['row']]
             )
 
         beam_seq[time,v_index] = candidate['column']
-        beam_seq_logprobs[time,_v_index] = candidate['local_logprob']
+        beam_seq_logprobs[time, v_index] = candidate['local_logprob']
         beam_logprobs_sum[v_index] = candidate['prob']
     state = new_state
     return (
@@ -132,7 +142,7 @@ def diverse_beam_search(
     gen_logprobs: function that returns
     the states and logprobs from the RNN output
     """
-    beam_ratio = num_beams / num_groups
+    beam_ratio = int(num_beams / num_groups)
     states = []
     beam_seqs = []
     beam_seq_logprobs = []
@@ -141,39 +151,43 @@ def diverse_beam_search(
     logprobs_list=[]
     state=[]
     # Initialization
+    print("BEAM RATIO ", beam_ratio, "\n", type(beam_ratio))
 
-    state = [[] for i in range(beam_ratio)]
+    state = [None]*beam_ratio
+    print(state)
 
     for group_num in range(num_groups):
-        beam_seqs[group_num] = torch.zeros(
+        beam_seqs.append(torch.zeros(
+            seq_length, beam_ratio, dtype=torch.long
+        ).to(device))
+
+        beam_seq_logprobs.append(torch.zeros(
             seq_length, beam_ratio
-        ).to(device)
+        ).to(device))
 
-        beam_seq_logprobs[group_num] = torch.new_zeros(
-            (seq_length, beam_ratio)
-        ).to(device)
+        beam_logprobs_sums.append(torch.zeros(
+            beam_ratio
+        ).to(device))
 
-        beam_logprobs_sums[group_num] = torch.new_zeros(
-            (beam_ratio)
-        ).to(device)
+        done_beams.append([])
+        logprobs_list.append(torch.zeros(
+            beam_ratio, init_logprobs.size()[1]
+        ).to(device))
 
-        done_beams[group_num] = []
-        logprobs_list[group_num] = torch.zeros(
-            bdash, init_logprobs.size()[1]
-        ).to(device)
+        logprobs_list[group_num] = (
+            init_logprobs.clone().to(device)
+        )
 
         for sub_beam_ix in range(beam_ratio):
-            logprobs_list[group_num][sub_beam_ix] = (
-                init_logprobs.clone().to(device)
-            )
-            beam_seqs[group_num][sub_beam_ix][0] = init_token
-            state[sub_beam_ix] = [st.clone().to(device) for st in init_state]
 
-        states[group_num] = [
-            [item.clone().to(device) for item in st]
-            for st
-            in state
-        ]
+            beam_seqs[group_num][sub_beam_ix][0] = init_token
+            state[sub_beam_ix] = [st.clone().to(device) for st in rnn_state]
+
+            print(state)
+
+        states.append(
+            [item.clone().to(device) for item in rnn_state]
+        )
     # End initialization
 
     for time in range(seq_length + num_groups):
@@ -183,6 +197,7 @@ def diverse_beam_search(
 
                 # Suppress <UNK> tokens in the decoding
                 logprobs[:,-1] -= 1000
+                print("logprobs shape: ", logprobs.shape)
                 aug_logprobs = __add_diversity(
                     beam_seqs,
                     logprobs,
@@ -196,7 +211,7 @@ def diverse_beam_search(
                 (
                     beam_seqs[group_ix],
                     beam_seq_logprobs[group_ix],
-                    beam_logprobs_sum[group_ix],
+                    beam_logprobs_sums[group_ix],
                     states[group_ix],
                     candidates_group
                 ) = __beam_step(
@@ -205,12 +220,12 @@ def diverse_beam_search(
                         beam_ratio,
                         beam_seqs[group_ix],
                         beam_seq_logprobs[group_ix],
-                        beam_logprobs_sum[group_ix],
+                        beam_logprobs_sums[group_ix],
                         states[group_ix],
                         time - group_ix
                 )
 
-                for beam_ix in beam_ratio:
+                for beam_ix in range(beam_ratio):
                     is_first_end_token = (
                         (
                             beam_seqs[group_ix][:,beam_ix][time-group_ix] == \
@@ -241,13 +256,13 @@ def diverse_beam_search(
                                 [:,beam_ix].clone(),
                             "logp": beam_seq_logprobs[group_ix][:,beam_ix]\
                                 .sum(),
-                            "aug_logp": beam_logprobs_sum[group_ix][beam_ix]
+                            "aug_logp": beam_logprobs_sums[group_ix][beam_ix]
                         }
                         final_beam["candidate"] = candidates_group[beam_ix]
                         done_beams[beam_ix] = final_beam
 
                     if is_first_end_token:
-                        beam_logprobs_sum[group_ix][beam_ix] = -1000
+                        beam_logprobs_sums[group_ix][beam_ix] = -1000
 
                 inpt = beam_seqs[group_ix]
                 output = gen_logprobs(inpt, states[group_ix])
@@ -272,8 +287,8 @@ def caption_image_beam_search(
         decoder,
         image_path,
         word_map,
-        beam_size=8,
-        group_size=8
+        beam_size,
+        num_groups,
         penalty):
     """Reads an image and captions it with beam search.
     param encoder: encoder model
@@ -285,6 +300,7 @@ def caption_image_beam_search(
     """
 
     k = beam_size
+    beam_ratio = int(k/num_groups)
     vocab_size = len(word_map)
 
     # Read image and process
@@ -319,43 +335,55 @@ def caption_image_beam_search(
 
     # We'll treat the problem as having a batch size of k
     encoder_out = encoder_out.expand(
-        k,
+        beam_ratio,
         num_pixels,
         encoder_dim
     )  # (k, num_pixels, encoder_dim)
 
     # Tensor to store top k previous words at each step;
     #now they're just <start>
-    k_prev_words = torch.LongTensor(
-        [[word_map['<start>']]]
-    ).to(device)  # (k, 1)
+    # k_prev_words = torch.LongTensor(
+    #     [[word_map['<start>']]]
+    # ).to(device)  # (k, 1)
 
-
-
-
-
+    # init_logprobs = [([None] * beam_ratio)*num_groups]
 
     h, c = decoder.init_hidden_state(encoder_out)
+    print("h: ", h.shape)
+    print("c: ", c.shape)
 
     def generate_log_probabilities(inputs, states):
         h_ = states[0]
         c_ = states[1]
         embeddings = decoder.embedding(inputs).squeeze(1)
+        if(len(embeddings.size()) == 3):
+            embeddings = embeddings.squeeze(0)
         awe, alpha = decoder.attention(encoder_out, h_)
+        print("awe before gate*awe: " + str(awe.shape))
         gate = decoder.sigmoid(decoder.f_beta(h_))
         awe = gate * awe
+        awe = torch.cat([awe for i in range(50)], dim=0)
+        print("awe after gate*awe: " + str(awe.shape))
+        
+        print("embeddings: "+ str(embeddings.shape))
+        print("concatenated: ",torch.cat([embeddings, awe], dim=1).size())
         h_, c_ = decoder.decode_step(
-            torch.cat([embeddings, awe], dim=1),
+            torch.cat([embeddings, awe], dim=1).transpose(1, 0).unsqueeze(0),
             (h_, c_)
-        )
+        )  #tried something
         scores = F.log_softmax(decoder.fc(h_), dim=1)
-        return [h_, c_, scores]
+        return h_, c_, scores
+
+    init_seq=torch.zeros(beam_ratio, 50, dtype=torch.long).to(device)
+    init_seq[:,0] = word_map['start']
+    # init_seq = torch.LongTensor([word_map['<start>']]*beam_ratio).to(device).unsqueeze(0)
+    h,c,init_logprobs = generate_log_probabilities(init_seq, [h,c])
 
     done_beams = diverse_beam_search(
         rnn_state=[h, c],
         init_logprobs=init_logprobs,
         num_beams=k,
-        num_groups=g,
+        num_groups=num_groups,
         penalty_lambda=penalty,
         seq_length=50,
         end_token=word_map['<end>'],
@@ -422,9 +450,9 @@ if __name__ == '__main__':
     )
 
     parser.add_argument(
-        '--group_size',
+        '--num_groups',
         '-g',
-        dest="group_size",
+        dest="num_groups",
         default=8,
         type=int,
         help='beam size for beam search'
@@ -456,16 +484,16 @@ if __name__ == '__main__':
     # Load word map (word2ix)
     with open(args.word_map, 'r') as j:
         word_map = json.load(j)
-        rev_word_map = {v: k for k, v in word_map.items()}  # ix2word
+    rev_word_map = {v: k for k, v in word_map.items()}  # ix2word
 
     # Encode, decode with attention and beam search
     seqs = caption_image_beam_search(
         encoder,
         decoder,
         args.img,
-        args.word_map,
+        word_map,
         beam_size=args.beam_size,
-        group_size=args.group_size
+        num_groups=args.num_groups,
         penalty=args._lambda
     )
     for seq in seqs:
